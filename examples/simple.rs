@@ -11,6 +11,9 @@ fn main() {
         .text1("(╯°□°）╯︵ ┻━┻")
         .sound(Some(Sound::SMS))
         .duration(Duration::Short)
+        .action("Flip it!", "flip_table", || { println!("°□° You flipped it!"); })
         .show()
         .expect("unable to send notification");
+    
+    std::thread::sleep(std::time::Duration::from_millis(10000));
 }

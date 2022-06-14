@@ -33,6 +33,9 @@ extern crate xml;
 #[macro_use]
 extern crate strum;
 
+use windows::Foundation::TypedEventHandler;
+use windows::UI::Notifications::ToastActivatedEventArgs;
+use windows::runtime::{IInspectable, Interface};
 use windows::{
     Data::Xml::Dom::XmlDocument,
     UI::Notifications::ToastNotificationManager,
@@ -55,6 +58,14 @@ pub struct Toast {
     audio: String,
     app_id: String,
     scenario: String,
+    actions: Vec<String>,
+    actions_data: Vec<ActionData>,
+}
+
+#[derive(Clone)]
+pub struct ActionData {
+    id: String,
+    callback: fn()
 }
 
 #[derive(Clone, Copy)]
@@ -151,6 +162,8 @@ impl Toast {
             audio: String::new(),
             app_id: app_id.to_string(),
             scenario: String::new(),
+            actions: Vec::new(),
+            actions_data: Vec::new()
         }
     }
 
@@ -283,6 +296,23 @@ impl Toast {
         self
     }
 
+    /// Add an action (button) to the toast
+    /// 
+    /// id must be unique!
+    /// (Maximum number of actions is 5)
+    pub fn action(mut self, label: &str, id: &str, onclick: fn()) -> Toast {
+        // Windows has a maximum of 5 actions per notification
+        if windows_check::is_newer_than_windows81() && self.actions.len() < 5 {
+            // Add the xml string into the actions vector
+            self.actions.push(
+                format!(r#"<action content="{}" arguments="{}" activationType="background" />"#, &label, &id)
+            );
+            // Keep track of the actions and their callbacks
+            self.actions_data.push(ActionData { id: id.to_string(), callback: onclick });
+        }
+        self
+    }
+
     fn create_template(&self) -> windows::runtime::Result<ToastNotification> {
         //using this to get an instance of XmlDocument
         let toast_xml = XmlDocument::new()?;
@@ -308,6 +338,9 @@ impl Toast {
                         {}{}{}
                         </binding>
                     </visual>
+                    <actions>
+                        {}
+                    </actions>
                     {}
                 </toast>",
             self.duration,
@@ -317,6 +350,7 @@ impl Toast {
             self.title,
             self.line1,
             self.line2,
+            self.actions.join(""),
             self.audio,
         )))?;
 
@@ -324,9 +358,38 @@ impl Toast {
         ToastNotification::CreateToastNotification(toast_xml)
     }
 
+    fn setup_actions(actions: Vec<ActionData>, notification: &ToastNotification) {
+
+        // Not sure if actions will work on older versions of windows...
+        if windows_check::is_newer_than_windows81() {
+            notification.Activated(TypedEventHandler::new(move |_: &Option<ToastNotification>, result: &Option<IInspectable>| {
+
+                match result {
+                    Some(inspectable) => {
+                        // Convert the IInspectable to a useable format:
+                        let event: ToastActivatedEventArgs = inspectable.cast().expect("Failed to cast toast event args");
+                        let arguments: String = event.Arguments().expect("Failed to read toast event args").to_string();
+
+                        // Execute the action callback if the ids match.
+                        for action in &actions {
+                            if arguments == action.id {
+                                (action.callback)();
+                            }
+                        }
+                    },
+                    None => return Ok(())
+                }
+
+                return Ok(());
+            })).expect("Failed to create hook for toast notification actions");
+        }
+    }
+
     /// Display the toast on the screen
     pub fn show(&self) -> windows::runtime::Result<()> {
         let toast_template = self.create_template()?;
+
+        Toast::setup_actions(self.actions_data.clone(), &toast_template);
 
         let toast_notifier = ToastNotificationManager::CreateToastNotifierWithId(HSTRING::from(&self.app_id))?;
 
